@@ -125,8 +125,8 @@ struct GTY(())  machine_function {
      This area is allocated by the callee at the very top of the frame.  */
   int varargs_size;
 
-  /* Memoized return value of leaf_function_p.  <0 if false, >0 if true.  */
-  int is_leaf;
+  /* Memoized return value of saved libcall.  <0 if false, >0 if true.  */
+  int saved_libcall;
 
   /* The current frame information, calculated by riscv_compute_frame_info.  */
   struct riscv_frame_info frame;
@@ -3484,6 +3484,7 @@ riscv_expand_prologue (void)
   /* When optimizing for size, call a subroutine to save the registers.  */
   if (riscv_use_save_libcall (frame))
     {
+      cfun->machine->saved_libcall = 1;
       rtx dwarf = NULL_RTX;
       dwarf = riscv_adjust_libcall_cfi_prologue ();
 
@@ -3494,6 +3495,8 @@ riscv_expand_prologue (void)
       RTX_FRAME_RELATED_P (insn) = 1;
       REG_NOTES (insn) = dwarf;
     }
+  else
+    cfun->machine->saved_libcall = 0;
 
   /* Save the registers.  */
   if ((frame->mask | frame->fmask) != 0)
@@ -4200,17 +4203,6 @@ riscv_trampoline_init (rtx m_tramp, tree fndecl, rtx chain_value)
   emit_insn (gen_clear_cache (addr, end_addr));
 }
 
-/* Return leaf_function_p () and memoize the result.  */
-
-static bool
-riscv_leaf_function_p (void)
-{
-  if (cfun->machine->is_leaf == 0)
-    cfun->machine->is_leaf = leaf_function_p () ? 1 : -1;
-
-  return cfun->machine->is_leaf > 0;
-}
-
 /* Implement TARGET_FUNCTION_OK_FOR_SIBCALL.  */
 
 static bool
@@ -4219,7 +4211,7 @@ riscv_function_ok_for_sibcall (tree decl ATTRIBUTE_UNUSED,
 {
   /* When optimzing for size, don't use sibcalls in non-leaf routines */
   if (TARGET_SAVE_RESTORE)
-    return riscv_leaf_function_p ();
+    return cfun->machine->saved_libcall;
 
   return true;
 }
