@@ -596,7 +596,7 @@ enum reg_class
 #define OUTGOING_REG_PARM_STACK_SPACE(FNTYPE) 1
 
 #define STACK_BOUNDARY 128
-
+
 /* Symbolic macros for the registers used to return integer and floating
    point values.  */
 
@@ -618,10 +618,13 @@ enum reg_class
    (REGNO) >= 18 && (REGNO) <= 27 ? (REGNO) - 16 : -1)
 
 #define LIBCALL_VALUE(MODE) \
-  riscv_function_value (NULL_TREE, NULL_TREE, MODE)
+  riscv_libcall_value (MODE)
+  //riscv_function_value (NULL_TREE, NULL_TREE, MODE)
 
+/*
 #define FUNCTION_VALUE(VALTYPE, FUNC) \
   riscv_function_value (VALTYPE, FUNC, VOIDmode)
+*/
 
 #define FUNCTION_VALUE_REGNO_P(N) ((N) == GP_RETURN || (N) == FP_RETURN)
 

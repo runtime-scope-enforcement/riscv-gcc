@@ -54,6 +54,16 @@ extern bool riscv_split_64bit_move_p (rtx, rtx);
 extern void riscv_split_doubleword_move (rtx, rtx);
 extern const char *riscv_output_move (rtx, rtx);
 extern const char *riscv_output_gpr_save (unsigned);
+extern const char *riscv_output_xscen_globals_prologue (void);
+extern const char *riscv_output_xscen_return_delegate (void);
+extern const char *riscv_output_xscen_epilogue (void);
+extern const char *riscv_output_xscen_call_site_delegate (unsigned int);
+extern void riscv_xscen_call_site_delegate (unsigned int uid);
+extern const char *riscv_xscen_new_storage_region(rtx reg, HOST_WIDE_INT size);
+extern void riscv_xscen_stack_prologue (void);
+extern void riscv_xscen_new_storage_region2(rtx reg, HOST_WIDE_INT size);
+extern void riscv_xscen_new_stack_storage_region(HOST_WIDE_INT size, HOST_WIDE_INT args);
+extern void riscv_xscen_register_jumptable (rtx l, rtx_insn* insn);
 #ifdef RTX_CODE
 extern void riscv_expand_scc (rtx *);
 extern void riscv_expand_conditional_branch (rtx *);
@@ -66,7 +76,9 @@ extern HOST_WIDE_INT riscv_initial_elimination_offset (int, int);
 extern void riscv_expand_prologue (void);
 extern void riscv_expand_epilogue (bool);
 extern bool riscv_can_use_return_insn (void);
-extern rtx riscv_function_value (const_tree, const_tree, enum machine_mode);
+extern rtx riscv_function_value (const_tree, const_tree, enum machine_mode, bool outgoing);
+extern rtx riscv_libcall_value (enum machine_mode);
+//extern rtx riscv_function_value (const_tree, const_tree, enum machine_mode);
 extern unsigned int riscv_hard_regno_nregs (int, enum machine_mode);
 
 #endif /* ! GCC_RISCV_PROTOS_H */

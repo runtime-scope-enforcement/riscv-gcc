@@ -35,7 +35,7 @@
    && (GET_CODE (operands[4]) != ASHIFT || (CONST_INT_P (operands[2]) && INTVAL (operands[2]) < 32))"
   [(set (match_dup 3)
 	  (truncate:SI
-	     (match_op_dup:DI 4 
+	     (match_op_dup:DI 4
 	       [(match_operand:DI 1 "register_operand")
 		(match_operand:DI 2 "arith_operand")])))])
 

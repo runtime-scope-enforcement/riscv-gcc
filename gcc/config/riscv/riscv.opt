@@ -101,6 +101,14 @@ mexplicit-relocs
 Target Report Mask(EXPLICIT_RELOCS)
 Use %reloc() operators, rather than assembly macros, to load addresses.
 
+mxscen
+Target Report Mask(XSCEN_ENABLED)
+Enable XSCEN scope enforcement instrumentation
+
+mxscendbg
+Target Report Mask(XSCEN_DEBUG)
+Enable XSCEN scope enforcement instrumentation debug printing
+
 Mask(64BIT)
 
 Mask(MUL)

@@ -43,6 +43,25 @@
   UNSPEC_BLOCKAGE
   UNSPEC_FENCE
   UNSPEC_FENCE_I
+
+  ;; scope enforcement extensions
+  UNSPEC_XSCEN_STACK_PROLOGUE
+  UNSPEC_XSCEN_GLOBALS_PROLOGUE
+
+  UNSPEC_XSCEN_SUBREGION
+  UNSPEC_XSCEN_DELEGATE_MOVE
+  UNSPEC_XSCEN_DELEGATE
+  UNSPEC_XSCEN_EPILOGUE
+
+  UNSPEC_XSCEN_CALL_SITE_DELEGATE
+  UNSPEC_XSCEN_ENTER_SCOPE
+
+  UNSPEC_XSCEN_STORAGE_REGION_BASE
+  UNSPEC_XSCEN_STORAGE_REGION_LIMIT
+
+  UNSPEC_XSCEN_NEW_STORAGE_REGION
+  UNSPEC_XSCEN_NEW_STORAGE_REGION2
+  UNSPEC_XSCEN_NEW_STACK_STORAGE_REGION
 ])
 
 (define_constants
@@ -109,7 +128,7 @@
 ;; logical      integer logical instructions
 ;; shift	integer shift instructions
 ;; slt		set less than instructions
-;; imul		integer multiply 
+;; imul		integer multiply
 ;; idiv		integer divide
 ;; move		integer register move (addi rd, rs1, 0)
 ;; fmove	floating point register move
@@ -165,7 +184,7 @@
 ;; D2S          double to float single
 ;; S2D          float single to double
 
-(define_attr "cnv_mode" "unknown,I2S,I2D,S2I,D2I,D2S,S2D" 
+(define_attr "cnv_mode" "unknown,I2S,I2D,S2I,D2I,D2S,S2D"
   (const_string "unknown"))
 
 ;; Length of instruction in bytes.
@@ -985,7 +1004,7 @@
   "TARGET_DOUBLE_FLOAT"
   "fcvt.s.d\t%0,%1"
   [(set_attr "type"	"fcvt")
-   (set_attr "cnv_mode"	"D2S")   
+   (set_attr "cnv_mode"	"D2S")
    (set_attr "mode"	"SF")])
 
 ;; Integer truncation patterns.  Truncating to HImode/QImode is a no-op.
@@ -1168,7 +1187,7 @@
   "TARGET_DOUBLE_FLOAT"
   "fcvt.d.s\t%0,%1"
   [(set_attr "type"	"fcvt")
-   (set_attr "cnv_mode"	"S2D")   
+   (set_attr "cnv_mode"	"S2D")
    (set_attr "mode"	"DF")])
 
 ;;
@@ -2025,15 +2044,21 @@
 	      (use (label_ref (match_operand 1 "" "")))]
   ""
 {
+
   if (CASE_VECTOR_PC_RELATIVE)
       operands[0] = expand_simple_binop (Pmode, PLUS, operands[0],
 					 gen_rtx_LABEL_REF (Pmode, operands[1]),
 					 NULL_RTX, 0, OPTAB_DIRECT);
 
+  rtx_insn* i;
+  rtx insn;
   if (CASE_VECTOR_PC_RELATIVE && Pmode == DImode)
-    emit_jump_insn (gen_tablejumpdi (operands[0], operands[1]));
+    insn = gen_tablejumpdi (operands[0], operands[1]);
   else
-    emit_jump_insn (gen_tablejumpsi (operands[0], operands[1]));
+    insn = gen_tablejumpsi (operands[0], operands[1]);
+  i = emit_jump_insn (insn);
+  if (TARGET_XSCEN_ENABLED)
+    riscv_xscen_register_jumptable(operands[1], i);
   DONE;
 })
 
@@ -2336,7 +2361,9 @@
   ""
   "")
 
+
 (include "sync.md")
 (include "peephole.md")
 (include "pic.md")
 (include "generic.md")
+(include "xscen.md")

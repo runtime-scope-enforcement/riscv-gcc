@@ -103,7 +103,9 @@ along with GCC; see the file COPYING3.  If not see
 #include "cgraph.h"
 #include "builtins.h"
 #include "rtl-iter.h"
+#include "gimple-pretty-print.h"
 #include <stdint.h>
+#include "xscen.h"
 
 /* True if X is an UNSPEC wrapper around a SYMBOL_REF or LABEL_REF.  */
 #define UNSPEC_ADDRESS_P(X)					\
@@ -172,6 +174,15 @@ struct GTY(())  riscv_frame_info {
   HOST_WIDE_INT arg_pointer_offset;
 };
 
+
+struct GTY(()) xscen_delegation {
+  unsigned int pointer_depth;
+  unsigned int struct_pointers;
+  unsigned int offsets[XSCEN_MAX_FIELDS];
+  bool subregion;
+  HOST_WIDE_INT subsize;
+};
+
 struct GTY(())  machine_function {
   /* The number of extra stack bytes taken up by register varargs.
      This area is allocated by the callee at the very top of the frame.  */
@@ -182,6 +193,23 @@ struct GTY(())  machine_function {
 
   /* The current frame information, calculated by riscv_compute_frame_info.  */
   struct riscv_frame_info frame;
+
+  int returns_pointer;
+  int return_register;
+  int allocator;
+  struct xscen_delegation return_fields;
+  int global_count;
+  tree globals[XSCEN_MAX_GLOBALS];
+  HOST_WIDE_INT global_sizes[XSCEN_MAX_GLOBALS];
+
+  int total_callees;
+  tree callees[XSCEN_MAX_CALLEES];
+  unsigned int callee_uids[XSCEN_MAX_CALLEES];
+  struct xscen_delegation* callee_pointer_args[XSCEN_MAX_CALLEES][XSCEN_MAX_ARGS];
+  unsigned int unknown_callee;
+
+  rtx jumptables[XSCEN_MAX_SWITCHES];
+  unsigned jtcount;
 };
 
 /* Information about a single argument.  */
@@ -1209,7 +1237,7 @@ riscv_legitimize_tls_address (rtx loc)
     }
   return dest;
 }
-
+
 /* If X is not a valid address for mode MODE, force it into a register.  */
 
 static rtx
@@ -1740,7 +1768,7 @@ riscv_split_doubleword_move (rtx dest, rtx src)
        riscv_emit_move (riscv_subword (dest, true), riscv_subword (src, true));
      }
 }
-
+
 /* Return the appropriate instructions to move SRC into DEST.  Assume
    that SRC is operand 1 and DEST is operand 0.  */
 
@@ -1831,7 +1859,7 @@ riscv_output_move (rtx dest, rtx src)
     }
   gcc_unreachable ();
 }
-
+
 /* Return true if CMP1 is a suitable second operand for integer ordering
    test CODE.  See also the *sCC patterns in riscv.md.  */
 
@@ -2462,13 +2490,16 @@ static rtx
 riscv_function_arg (cumulative_args_t cum_v, enum machine_mode mode,
 		    const_tree type, bool named)
 {
+  rtx ret = NULL;
+
   CUMULATIVE_ARGS *cum = get_cumulative_args (cum_v);
   struct riscv_arg_info info;
 
   if (mode == VOIDmode)
     return NULL;
 
-  return riscv_get_arg_info (&info, cum, mode, type, named, false);
+  ret = riscv_get_arg_info (&info, cum, mode, type, named, false);
+  return ret;
 }
 
 /* Implement TARGET_FUNCTION_ARG_ADVANCE.  */
@@ -2507,10 +2538,29 @@ riscv_arg_partial_bytes (cumulative_args_t cum,
    VALTYPE is null and MODE is the mode of the return value.  */
 
 rtx
-riscv_function_value (const_tree type, const_tree func, enum machine_mode mode)
+riscv_target_function_value (const_tree ret_type, const_tree fn_decl_or_type, bool outgoing) {
+  return riscv_function_value (ret_type, fn_decl_or_type, TYPE_MODE(ret_type), outgoing);
+}
+
+rtx riscv_libcall_value (enum machine_mode mode) {
+  struct riscv_arg_info info;
+  CUMULATIVE_ARGS args;
+  memset (&args, 0, sizeof args);
+  return riscv_get_arg_info (&info, &args, mode, NULL_TREE, true, true);
+}
+
+rtx
+riscv_function_value (const_tree ret_type, const_tree fn_decl_or_type, enum machine_mode mode, bool outgoing)
 {
   struct riscv_arg_info info;
   CUMULATIVE_ARGS args;
+  const_tree type = ret_type;
+  const_tree func = NULL_TREE;
+  rtx ret;
+
+  if (!mode && ret_type) {
+    mode = TYPE_MODE (ret_type);
+  }
 
   if (type)
     {
@@ -2521,10 +2571,20 @@ riscv_function_value (const_tree type, const_tree func, enum machine_mode mode)
       /* Since TARGET_PROMOTE_FUNCTION_MODE unconditionally promotes,
 	 return values, promote the mode here too.  */
       mode = promote_function_mode (type, mode, &unsigned_p, func, 1);
+      //mode = TARGET_PROMOTE_FUNCTION_MODE (type, mode, &unsigned_p, NULL, 1);
     }
 
   memset (&args, 0, sizeof args);
-  return riscv_get_arg_info (&info, &args, mode, type, true, true);
+  ret = riscv_get_arg_info (&info, &args, mode, type, true, true);
+//  if (outgoing && cfun)
+//    gcc_assert(cfun->machine->returns_pointer ^ POINTER_TYPE_P(type));
+  if (TARGET_XSCEN_ENABLED && cfun && cfun->machine->returns_pointer && outgoing) {
+    gcc_assert(POINTER_TYPE_P(type));
+    if (TARGET_XSCEN_DEBUG)
+      fprintf(stderr, "riscv_function_value: returning a pointer in %s\n", current_function_name());
+    cfun->machine->return_register = rhs_regno(ret);
+  }
+  return ret;
 }
 
 /* Implement TARGET_PASS_BY_REFERENCE. */
@@ -2609,6 +2669,175 @@ riscv_va_start (tree valist, rtx nextarg)
   std_expand_builtin_va_start (valist, nextarg);
 }
 
+void
+riscv_xscen_new_storage_region2(rtx reg, HOST_WIDE_INT size)
+{
+  gcc_assert(size > 0);
+  HOST_WIDE_INT lastaddr = size-1;
+  rtx insn;
+  rtx temp2;
+  if (TARGET_XSCEN_DEBUG)
+    fprintf(stderr, "riscv_xscen_new_storage_region2: size %ld\n", size);
+  if (!SMALL_OPERAND(lastaddr)) {
+    if (TARGET_XSCEN_DEBUG)
+      fprintf(stderr, "    not a small operand\n");
+    //TODO: using this register not sure to be safe, requires some rewrite anyway
+    temp2 = gen_rtx_REG (Pmode, GP_TEMP_FIRST+2);
+    gcc_assert(temp2);
+
+    insn = gen_xscen_storage_region_base(reg, GEN_INT(0));
+    emit_insn(insn);
+    riscv_add_offset(temp2, reg, lastaddr);
+    insn = gen_xscen_storage_region_limit(temp2, GEN_INT(0));
+    emit_insn(insn);
+  } else {
+    insn = gen_xscen_new_storage_region(reg, GEN_INT(lastaddr));
+    emit_insn(insn);
+  }
+}
+
+void
+riscv_xscen_new_stack_storage_region (HOST_WIDE_INT size, HOST_WIDE_INT args)
+{
+  gcc_assert(size > 0);
+  if (TARGET_XSCEN_DEBUG)
+    fprintf(stderr, "riscv_xscen_new_stack_storage_region called\n");
+  rtx insn;
+  if (!SMALL_OPERAND(size)) {
+    rtx temp = RISCV_PROLOGUE_TEMP (Pmode);
+    gcc_assert(temp);
+    riscv_add_offset(temp, stack_pointer_rtx, -size);
+    //TODO: or is the temp supposed to be used like this?
+    //temp = riscv_add_offset(temp, stack_pointer_rtx, -size);
+    insn = gen_xscen_storage_region_base(temp, GEN_INT(0));
+    emit_insn(insn);
+    insn = gen_xscen_storage_region_limit(stack_pointer_rtx, GEN_INT(-1+args));
+    emit_insn(insn);
+  } else {
+    insn = gen_xscen_storage_region_base(stack_pointer_rtx, GEN_INT(-size));
+    emit_insn(insn);
+    insn = gen_xscen_storage_region_limit(stack_pointer_rtx, GEN_INT(-1+args));
+    emit_insn(insn);
+  }
+}
+
+static void
+riscv_xscen_prologue_globals()
+{
+  bool ret;
+  rtx insn;
+  gcc_assert(cfun->machine->global_count <= XSCEN_MAX_GLOBALS);
+  for (int i=0; i<cfun->machine->global_count; i++) {
+    HOST_WIDE_INT size = cfun->machine->global_sizes[i];
+    tree g = cfun->machine->globals[i];
+    rtx dest = RISCV_PROLOGUE_TEMP (Pmode);
+    rtx src;
+
+    if (TREE_CODE(g) == VAR_DECL) {
+      src = XEXP(DECL_RTL(g), 0);
+    } else if (TREE_CODE(g) == STRING_CST) {
+      src = XEXP(output_constant_def(g, 1), 0);
+    } else if (TREE_CODE(g) == ADDR_EXPR) {
+      gcc_assert(TREE_CODE(TREE_OPERAND(g, 0)) == STRING_CST);
+      //get first operand of ADDR_EXPR which is STRING_CST or other constant
+      //then use output_constant_def to gen the rtl or get the pre-generated mem
+      //then get first operand from that which is symbol_ref
+      src = XEXP(output_constant_def(TREE_OPERAND(g, 0), 1), 0);
+    } else {
+      //expected VAR_DECL or ADDR_EXPR or STRING_CST
+      gcc_unreachable();
+    }
+    if (TARGET_XSCEN_DEBUG)
+      fprintf(stderr, "   handling global %d: dest %s src %s\n", i, GET_RTX_NAME(GET_CODE(dest)), GET_RTX_NAME(GET_CODE(src)));
+    ret = riscv_legitimize_move(Pmode, dest, src);
+    gcc_assert(ret);
+    insn = gen_xscen_new_storage_region2(dest, GEN_INT(size));
+    emit_insn(insn);
+  }
+}
+
+void
+riscv_xscen_register_jumptable (rtx l, rtx_insn* insn)
+{
+  unsigned i = cfun->machine->jtcount;
+  cfun->machine->jumptables[i] = l;
+  cfun->machine->jtcount++;
+  gcc_assert(cfun->machine->jtcount <= XSCEN_MAX_SWITCHES);
+}
+
+static void
+riscv_xscen_prologue_jumptables ()
+{
+  for (unsigned i=0; i<cfun->machine->jtcount; i++) {
+    bool ret;
+    HOST_WIDE_INT size, modesize;
+    unsigned cases;
+    rtx dest, src, insn;
+    rtx_insn* table;
+    rtvec rv;
+    rtx_jump_table_data *jtd;
+
+    src = cfun->machine->jumptables[i];
+    gcc_assert(src);
+
+    table = NEXT_INSN(safe_as_a <rtx_insn *> (src));
+    if (table == NULL_RTX || !JUMP_TABLE_DATA_P(table))
+      gcc_unreachable();
+
+    modesize = GET_MODE_SIZE(Pmode);
+    jtd = as_a <rtx_jump_table_data *> (table);
+    rv = jtd->get_labels();
+    cases = GET_NUM_ELEM(rv);
+    size = cases*modesize;
+
+    gcc_assert(size);
+    dest = RISCV_PROLOGUE_TEMP (Pmode);
+    src = gen_rtx_LABEL_REF(Pmode, src);
+    ++LABEL_NUSES(src);
+    ret = riscv_legitimize_move(Pmode, dest, src);
+    gcc_assert(ret);
+    insn = gen_xscen_new_storage_region2(dest, GEN_INT(size));
+    emit_insn(insn);
+  }
+}
+
+void
+riscv_xscen_prepare_prologue()
+{
+  rtx insn;
+
+  //enforcement starts from main
+  if (!strcmp(current_function_name(), "main")) {
+    insn = gen_xscen_enter_scope();
+    emit_insn(insn);
+  }
+
+  insn = gen_xscen_stack_prologue();
+  emit_insn(insn);
+
+  riscv_xscen_prologue_globals();
+
+  riscv_xscen_prologue_jumptables();
+}
+
+static void
+riscv_xscen_epilogue()
+{
+  if (TARGET_XSCEN_DEBUG)
+    fprintf(stderr, "riscv_xscen_epilogue\n");
+  rtx insn;
+
+  if (cfun->machine->allocator) {
+  }
+
+  if (cfun->machine->returns_pointer) {
+    insn = gen_xscen_delegate(gen_rtx_REG(Pmode, cfun->machine->return_register), GEN_INT(0));
+    emit_insn(insn);
+  }
+  insn = gen_xscen_epilogue();
+  emit_insn(insn);
+}
+
 /* Expand a call of type TYPE.  RESULT is where the result will go (null
    for "call"s and "sibcall"s), ADDR is the address of the function,
    ARGS_SIZE is the size of the arguments and AUX is the value passed
@@ -2666,6 +2895,22 @@ riscv_expand_call (bool sibcall_p, rtx result, rtx addr, rtx args_size)
 	result = XEXP (XVECEXP (result, 0, 0), 0);
       pattern = fn (result, addr, args_size);
     }
+
+  if (TARGET_XSCEN_ENABLED) {
+    if (TARGET_XSCEN_DEBUG)
+      fprintf(stderr, "riscv_expand_call: xscen part starting\n");
+    tree calleet = XTREE(addr, 1);
+    unsigned uid = 0;
+    if (calleet != NULL_TREE) {
+      uid = DECL_UID(FUNCTION_DECL_CHECK(calleet));
+    } else {
+      uid = cfun->machine->unknown_callee++;
+      if (TARGET_XSCEN_DEBUG)
+        fprintf(stderr, "   no FUNC_DECL: anonymous function\n");
+    }
+    emit_insn(gen_xscen_call_site_delegate(GEN_INT(uid)));
+    emit_insn(gen_xscen_enter_scope());
+  }
 
   return emit_call_insn (pattern);
 }
@@ -3393,6 +3638,87 @@ riscv_output_gpr_save (unsigned mask)
   return s;
 }
 
+void
+riscv_xscen_stack_prologue (void)
+{
+  struct riscv_frame_info *frame = &cfun->machine->frame;
+  if (TARGET_XSCEN_DEBUG)
+    fprintf(stderr, "riscv_xscen_stack_prologue called %d\n", crtl->args.size);
+  HOST_WIDE_INT size = frame->total_size;
+  emit_insn(gen_xscen_new_stack_storage_region(GEN_INT(size), GEN_INT(crtl->args.size)));
+}
+
+void
+riscv_xscen_call_site_delegate (unsigned int uid)
+{
+  const char *name = current_function_name();
+  if (TARGET_XSCEN_DEBUG) fprintf(stderr, "riscv_xscen_call_site_delegate: staring for function %s with uid %d\n", name, uid);
+
+  struct xscen_delegation **dlg = NULL;
+  //find the function declaration for UID
+  int i;
+  for (i = 0; i < cfun->machine->total_callees; i++) {
+    if (cfun->machine->callee_uids[i] == uid) {
+      dlg = cfun->machine->callee_pointer_args[i];
+      break;
+    }
+  }
+
+  if (!dlg) return;
+
+  for (int i = 0, j = 0; i < XSCEN_MAX_ARGS; i++,j++) {
+    if (!dlg[i] || dlg[i]->pointer_depth == 0) continue;
+
+    int regno = GP_ARG_FIRST+j;
+    rtx test, label, insn, tmp, reg, zero;
+
+    if (TARGET_XSCEN_DEBUG) fprintf(stderr, "param %d in function call to %d in %s will be delegated\n", i, uid, name);
+
+    reg = gen_rtx_REG (Pmode, regno);
+    label = gen_label_rtx();
+    zero = GEN_INT(0);
+    test = gen_rtx_EQ(VOIDmode, reg, zero);
+    emit_jump_insn(gen_cbranchsi4(test, reg, zero, label));
+
+    if (dlg[i]->subregion) {
+      HOST_WIDE_INT subsize = dlg[i]->subsize;
+      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   marked as subregion of size %d\n", subsize);
+
+      insn = gen_xscen_subregion(reg, reg, GEN_INT(subsize-1));
+      emit_insn(insn);
+      insn = gen_xscen_delegate_move(reg, GEN_INT(0));
+      emit_insn(insn);
+    } else {
+      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   not a subregion, normal delegate\n");
+
+      insn = gen_xscen_delegate(reg, GEN_INT(0));
+      emit_insn(insn);
+    }
+
+    if (dlg[i]->pointer_depth == 2) {
+      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   pointer depth was 2\n");
+
+      tmp = gen_rtx_REG (Pmode, GP_TEMP_FIRST+1);
+      insn = riscv_emit_move(tmp, gen_rtx_MEM(Pmode, reg));
+      insn = gen_xscen_delegate(tmp, GEN_INT(0));
+      emit_insn(insn);
+    }
+
+    for (unsigned int k=0; k < dlg[i]->struct_pointers; k++) {
+      unsigned int offset = dlg[i]->offsets[k];
+      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   doing struct pointer %d offset=%d\n", k, offset);
+
+      rtx addr;
+      tmp = gen_rtx_REG (Pmode, GP_TEMP_FIRST+1);
+      addr = riscv_add_offset(tmp, reg, offset);
+      riscv_emit_move(tmp, gen_rtx_MEM(Pmode, addr));
+      insn = gen_xscen_delegate(tmp, GEN_INT(0));
+      emit_insn(insn);
+    }
+    emit_label (label);
+  }
+}
+
 /* For stack frames that can't be allocated with a single ADDI instruction,
    compute the best value to initially allocate.  It must at a minimum
    allocate enough space to spill the callee-saved registers.  */
@@ -3426,6 +3752,11 @@ riscv_expand_prologue (void)
   HOST_WIDE_INT size = frame->total_size;
   unsigned mask = frame->mask;
   rtx insn;
+
+  //xscen
+  if (TARGET_XSCEN_ENABLED) {
+    riscv_xscen_prepare_prologue();
+  }
 
   if (flag_stack_usage_info)
     current_function_static_stack_size = size;
@@ -3506,6 +3837,11 @@ riscv_expand_epilogue (bool sibcall_p)
 
   if (!sibcall_p && riscv_can_use_return_insn ())
     {
+      if (TARGET_XSCEN_ENABLED) {
+        //xscen
+        riscv_xscen_epilogue();
+      }
+
       emit_jump_insn (gen_return ());
       return;
     }
@@ -3586,6 +3922,12 @@ riscv_expand_epilogue (bool sibcall_p)
   if (use_restore_libcall)
     {
       emit_insn (gen_gpr_restore (GEN_INT (riscv_save_libcall_count (mask))));
+
+      if (TARGET_XSCEN_ENABLED) {
+        //xscen
+        riscv_xscen_epilogue();
+      }
+
       emit_jump_insn (gen_gpr_restore_return (ra));
       return;
     }
@@ -3595,8 +3937,14 @@ riscv_expand_epilogue (bool sibcall_p)
     emit_insn (gen_add3_insn (stack_pointer_rtx, stack_pointer_rtx,
 			      EH_RETURN_STACKADJ_RTX));
 
-  if (!sibcall_p)
+  if (!sibcall_p) {
+    if (TARGET_XSCEN_ENABLED) {
+      //xscen
+      riscv_xscen_epilogue();
+    }
+
     emit_jump_insn (gen_simple_return_internal (ra));
+  }
 }
 
 /* Return nonzero if this function is known to have a null epilogue.
@@ -3837,7 +4185,10 @@ riscv_output_mi_thunk (FILE *file, tree thunk_fndecl ATTRIBUTE_UNUSED,
 static struct machine_function *
 riscv_init_machine_status (void)
 {
-  return ggc_cleared_alloc<machine_function> ();
+  struct machine_function *mf = ggc_cleared_alloc<machine_function> ();
+  mf->unknown_callee = 1;
+  mf->returns_pointer = 0;
+  return mf;
 }
 
 /* Implement TARGET_OPTION_OVERRIDE.  */
@@ -4150,6 +4501,9 @@ riscv_cannot_copy_insn_p (rtx_insn *insn)
 
 #undef TARGET_CANNOT_COPY_INSN_P
 #define TARGET_CANNOT_COPY_INSN_P riscv_cannot_copy_insn_p
+
+#undef TARGET_FUNCTION_VALUE
+#define TARGET_FUNCTION_VALUE riscv_target_function_value
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 
