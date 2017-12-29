@@ -14,6 +14,16 @@
   "srsub\t%0,%2(%1)"
 )
 
+(define_insn "xscen_delegate_subregion"
+  [(unspec_volatile [
+    (match_operand 0 "register_operand" "r")
+    (match_operand 1 "register_operand" "r")
+    (match_operand 2 "const_int_operand")
+    ] UNSPEC_XSCEN_DELEGATE_SUBREGION)]
+  ""
+  "srdsub\t%0,%2(%1)"
+)
+
 (define_insn "xscen_delegate_move"
   [(unspec_volatile [
     (match_operand 0 "register_operand" "r")
@@ -50,22 +60,42 @@
   "sbent"
 )
 
-(define_insn "xscen_storage_region_base"
+;(define_insn "xscen_storage_region_base"
+;  [(unspec_volatile [
+;    (match_operand 0 "register_operand" "r")
+;    (match_operand 1 "const_int_operand")]
+;     UNSPEC_XSCEN_STORAGE_REGION_BASE)]
+;  ""
+;  "srbse\t%1(%0)"
+;)
+
+;(define_insn "xscen_storage_region_limit"
+;  [(unspec_volatile [
+;    (match_operand 0 "register_operand" "r")
+;    (match_operand 1 "const_int_operand")]
+;     UNSPEC_XSCEN_STORAGE_REGION_LIMIT)]
+;  ""
+;  "srlmt\t%1(%0)"
+;)
+
+(define_insn "xscen_storage_region_add"
   [(unspec_volatile [
     (match_operand 0 "register_operand" "r")
-    (match_operand 1 "const_int_operand")]
-     UNSPEC_XSCEN_STORAGE_REGION_BASE)]
+    (match_operand 1 "register_operand" "r")
+    (match_operand 2 "const_int_operand")
+    ] UNSPEC_XSCEN_STORAGE_REGION_ADD)]
   ""
-  "srbse\t%1(%0)"
+  "sradd\t%0,%2(%1)"
 )
 
-(define_insn "xscen_storage_region_limit"
+(define_insn "xscen_storage_region_dda"
   [(unspec_volatile [
     (match_operand 0 "register_operand" "r")
-    (match_operand 1 "const_int_operand")]
-     UNSPEC_XSCEN_STORAGE_REGION_LIMIT)]
+    (match_operand 1 "register_operand" "r")
+    (match_operand 2 "const_int_operand")
+    ] UNSPEC_XSCEN_STORAGE_REGION_DDA)]
   ""
-  "srlmt\t%1(%0)"
+  "srdda\t%2(%0),%1"
 )
 
 (define_expand "xscen_new_storage_region2"
@@ -80,18 +110,19 @@
   }
 )
 
-(define_expand "xscen_new_storage_region"
+(define_expand "xscen_new_small_storage_region"
   [(unspec_volatile [
     (match_operand 0 "register_operand" "r")
     (match_operand 1 "const_int_operand")]
      UNSPEC_XSCEN_NEW_STORAGE_REGION)]
   ""
   {
-  emit_insn(gen_xscen_storage_region_base(operands[0], GEN_INT(0)));
-  emit_insn(gen_xscen_storage_region_limit(operands[0], operands[1]));
+  emit_insn(gen_xscen_storage_region_add(operands[0], operands[0], operands[1]));
   DONE;
   }
 )
+;//  emit_insn(gen_xscen_storage_region_base(operands[0], GEN_INT(0)));
+;//  emit_insn(gen_xscen_storage_region_limit(operands[0], operands[1]));
 
 (define_expand "xscen_new_stack_storage_region"
   [(unspec_volatile [

@@ -2669,6 +2669,25 @@ riscv_va_start (tree valist, rtx nextarg)
   std_expand_builtin_va_start (valist, nextarg);
 }
 
+//#undef TARGET_INIT_BUILTINS
+//#define TARGET_INIT_BUILTINS riscv_builtin_init
+//static void
+//riscv_builtin_init()
+//{
+//  tree type;
+//  int code;
+//
+//  tree args = void_list_node;
+//  tree arg1 = NULL_TREE;
+//  arg1 = make_tree();
+//  TREE_CODE(arg1) = POINTER_TYPE;
+//  args = tree_cons(NULL, arg1, args);
+//  type = build_function_type(VOID_TYPE, args);
+//  code = 1;
+//  
+//  add_builtin_function ("__builtin_scen_storage_region", type, code, BUILT_IN_NORMAL, NULL, NULL_TREE);
+//}
+
 void
 riscv_xscen_new_storage_region2(rtx reg, HOST_WIDE_INT size)
 {
@@ -2685,13 +2704,11 @@ riscv_xscen_new_storage_region2(rtx reg, HOST_WIDE_INT size)
     temp2 = gen_rtx_REG (Pmode, GP_TEMP_FIRST+2);
     gcc_assert(temp2);
 
-    insn = gen_xscen_storage_region_base(reg, GEN_INT(0));
-    emit_insn(insn);
     riscv_add_offset(temp2, reg, lastaddr);
-    insn = gen_xscen_storage_region_limit(temp2, GEN_INT(0));
+    insn = gen_xscen_storage_region_add(reg, temp2, GEN_INT(0));
     emit_insn(insn);
   } else {
-    insn = gen_xscen_new_storage_region(reg, GEN_INT(lastaddr));
+    insn = gen_xscen_new_small_storage_region(reg, GEN_INT(lastaddr));
     emit_insn(insn);
   }
 }
@@ -2701,23 +2718,34 @@ riscv_xscen_new_stack_storage_region (HOST_WIDE_INT size, HOST_WIDE_INT args)
 {
   gcc_assert(size > 0);
   if (TARGET_XSCEN_DEBUG)
-    fprintf(stderr, "riscv_xscen_new_stack_storage_region called\n");
+    fprintf(stderr, "riscv_xscen_new_stack_storage_region called size: %ld (%ssmall), args: %ld\n", size, (SMALL_OPERAND(size)?"":"not "), args);
   rtx insn;
   if (!SMALL_OPERAND(size)) {
     rtx temp = RISCV_PROLOGUE_TEMP (Pmode);
     gcc_assert(temp);
-    riscv_add_offset(temp, stack_pointer_rtx, -size);
-    //TODO: or is the temp supposed to be used like this?
-    //temp = riscv_add_offset(temp, stack_pointer_rtx, -size);
-    insn = gen_xscen_storage_region_base(temp, GEN_INT(0));
+    riscv_emit_move (RISCV_PROLOGUE_TEMP (Pmode), GEN_INT(-size)); //t0 = -size
+    temp = RISCV_PROLOGUE_TEMP (Pmode);
+    insn = gen_add3_insn(temp, stack_pointer_rtx, temp); //t0 = sp + t0
     emit_insn(insn);
-    insn = gen_xscen_storage_region_limit(stack_pointer_rtx, GEN_INT(-1+args));
-    emit_insn(insn);
+    if (args == 0) {
+      insn = gen_xscen_storage_region_dda(temp, stack_pointer_rtx, GEN_INT(0)); //srdda t0, sp
+      emit_insn(insn);
+    } else {
+      insn = gen_xscen_storage_region_add(temp, stack_pointer_rtx, GEN_INT(-1+args)); //sradd t0, sp+args-1
+      emit_insn(insn);
+    }
   } else {
-    insn = gen_xscen_storage_region_base(stack_pointer_rtx, GEN_INT(-size));
-    emit_insn(insn);
-    insn = gen_xscen_storage_region_limit(stack_pointer_rtx, GEN_INT(-1+args));
-    emit_insn(insn);
+    if (args == 0) {
+      insn = gen_xscen_storage_region_dda(stack_pointer_rtx, stack_pointer_rtx, GEN_INT(-size)); 
+      emit_insn(insn);
+    } else {
+      rtx temp = RISCV_PROLOGUE_TEMP (Pmode);
+      gcc_assert(temp);
+      insn = gen_add3_insn(temp, stack_pointer_rtx, GEN_INT(args-1)); //t0 = sp + args-1
+      emit_insn(insn);
+      insn = gen_xscen_storage_region_dda(stack_pointer_rtx, temp, GEN_INT(-size)); //srdda -size(sp), t0
+      emit_insn(insn);
+    }
   }
 }
 
@@ -3682,12 +3710,12 @@ riscv_xscen_call_site_delegate (unsigned int uid)
 
     if (dlg[i]->subregion) {
       HOST_WIDE_INT subsize = dlg[i]->subsize;
-      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   marked as subregion of size %d\n", subsize);
+      if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   marked as subregion of size %ld\n", subsize);
 
-      insn = gen_xscen_subregion(reg, reg, GEN_INT(subsize-1));
+      insn = gen_xscen_delegate_subregion(reg, reg, GEN_INT(subsize-1));
       emit_insn(insn);
-      insn = gen_xscen_delegate_move(reg, GEN_INT(0));
-      emit_insn(insn);
+      //insn = gen_xscen_delegate_move(reg, GEN_INT(0));
+      //emit_insn(insn);
     } else {
       if (TARGET_XSCEN_DEBUG) fprintf(stderr, "   not a subregion, normal delegate\n");
 
@@ -4504,6 +4532,7 @@ riscv_cannot_copy_insn_p (rtx_insn *insn)
 
 #undef TARGET_FUNCTION_VALUE
 #define TARGET_FUNCTION_VALUE riscv_target_function_value
+
 
 struct gcc_target targetm = TARGET_INITIALIZER;
 
